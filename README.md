@@ -1,6 +1,14 @@
 # Open Claude Code
 <a href="README-zh.md"><img src="https://img.shields.io/badge/🇨🇳中文版-1a1a2e?style=for-the-badge"></a>
 <a href="README.md"><img src="https://img.shields.io/badge/🇺🇸English-1a1a2e?style=for-the-badge"></a>
+ 
+## Quickstart
+```
+cd run
+brew install bun
+bun install
+bun run dev
+```
 
 ## Directory tree
 ```

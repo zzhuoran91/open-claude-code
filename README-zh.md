@@ -2,6 +2,14 @@
 <a href="README-zh.md"><img src="https://img.shields.io/badge/🇨🇳中文版-1a1a2e?style=for-the-badge"></a>
 <a href="README.md"><img src="https://img.shields.io/badge/🇺🇸English-1a1a2e?style=for-the-badge"></a>
 
+## 快速开始
+```
+cd run
+brew install bun
+bun install
+bun run dev
+```
+
 ## 目录树
 ```
 src/
