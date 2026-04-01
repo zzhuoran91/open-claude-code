@@ -12,6 +12,18 @@ bun run dev
 
 ![](assets/run-claude-code.png)
 
+## Claude Code Study Group
+<div style="display: flex; justify-content: space-around; align-items: flex-start; gap: 40px;">
+  <div style="text-align: center;">
+    <img src="assets/discord-qr.png" width="220" alt="discord">
+    <p style="margin-top: 10px; font-size: 14px;">discord</p>
+  </div>
+  <div style="text-align: center;">
+    <img src="assets/wechat-qr.png" width="220" alt="wechat">
+    <p style="margin-top: 10px; font-size: 14px;">wechat</p>
+  </div>
+</div>
+
 ## Directory tree
 ```
 src/
