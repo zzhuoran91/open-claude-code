@@ -66,11 +66,41 @@ export function getUserSpecifiedModelSetting(): ModelSetting | undefined {
     specifiedModel = modelOverride
   } else {
     const settings = getSettings_DEPRECATED() || {}
-    specifiedModel = process.env.ANTHROPIC_MODEL || settings.model || undefined
+    const providerRaw =
+      process.env.LLM_PROVIDER ||
+      process.env.CLAUDE_CODE_LLM_PROVIDER ||
+      process.env.CLAUDE_CODE_PROVIDER ||
+      ''
+    const provider = providerRaw.trim().toLowerCase()
+    const isOpenAICompat =
+      provider === 'openai' ||
+      provider === 'openai_compat' ||
+      provider === 'openai-compatible' ||
+      provider === 'openrouter'
+
+    specifiedModel = isOpenAICompat
+      ? process.env.LLM_MODEL ||
+        process.env.OPENAI_MODEL ||
+        process.env.ANTHROPIC_MODEL ||
+        settings.model ||
+        undefined
+      : process.env.ANTHROPIC_MODEL || settings.model || undefined
   }
 
   // Ignore the user-specified model if it's not in the availableModels allowlist.
-  if (specifiedModel && !isModelAllowed(specifiedModel)) {
+  // OpenAI-compatible mode supports arbitrary model IDs, so skip allowlisting.
+  const providerRaw =
+    process.env.LLM_PROVIDER ||
+    process.env.CLAUDE_CODE_LLM_PROVIDER ||
+    process.env.CLAUDE_CODE_PROVIDER ||
+    ''
+  const provider = providerRaw.trim().toLowerCase()
+  const isOpenAICompat =
+    provider === 'openai' ||
+    provider === 'openai_compat' ||
+    provider === 'openai-compatible' ||
+    provider === 'openrouter'
+  if (!isOpenAICompat && specifiedModel && !isModelAllowed(specifiedModel)) {
     return undefined
   }
 

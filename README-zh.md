@@ -2,8 +2,14 @@
 <a href="README-zh.md"><img src="https://img.shields.io/badge/🇨🇳中文版-1a1a2e?style=for-the-badge"></a>
 <a href="README.md"><img src="https://img.shields.io/badge/🇺🇸English-1a1a2e?style=for-the-badge"></a>
 
+## 🎉 News
+[2026.04.01]🎯📢 🚀 Open Claude Code 现已支持两种 LLM_PROVIDER 接入模式：anthropic (原生接口) 与 openai_compat (OpenAI 兼容接口)！
+通过 openai_compat 模式，你可以轻松对接包括 OpenRouter、DeepSeek、Gemini 在内的几乎所有主流模型服务商。
+
 ## 快速开始
 ```
+Copy `.env.example` to `.env` and fill in your api key
+
 cd run
 brew install bun
 bun install

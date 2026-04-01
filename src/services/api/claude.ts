@@ -229,12 +229,14 @@ import { getInitializationStatus } from '../lsp/manager.js'
 import { isToolFromMcpServer } from '../mcp/utils.js'
 import { withStreamingVCR, withVCR } from '../vcr.js'
 import { CLIENT_REQUEST_ID_HEADER, getAnthropicClient } from './client.js'
+import { getLLMProviderKind, getOpenAICompatConfigOrThrow } from './providerConfig.js'
 import {
   API_ERROR_MESSAGE_PREFIX,
   CUSTOM_OFF_SWITCH_MESSAGE,
   getAssistantMessageFromError,
   getErrorMessageIfRefusal,
 } from './errors.js'
+import { queryOpenAICompatOnce } from './openaiCompat.js'
 import {
   EMPTY_USAGE,
   type GlobalCacheStrategy,
@@ -534,6 +536,41 @@ export async function verifyApiKey(
   // Skip API verification if running in print mode (isNonInteractiveSession)
   if (isNonInteractiveSession) {
     return true
+  }
+
+  if (getLLMProviderKind() === 'openai_compat') {
+    try {
+      const { baseUrl, extraHeaders } = getOpenAICompatConfigOrThrow()
+      const model =
+        process.env.LLM_MODEL ||
+        process.env.OPENAI_MODEL ||
+        // Best-effort fallback: many OpenAI-compatible gateways accept this.
+        'gpt-3.5-turbo'
+      const url = `${baseUrl.replace(/\/+$/, '')}/chat/completions`
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json',
+          ...extraHeaders,
+        },
+        body: JSON.stringify({
+          model,
+          messages: [{ role: 'user', content: 'test' }],
+          max_tokens: 1,
+          stream: false,
+        }),
+      })
+      if (res.status === 401 || res.status === 403) return false
+      if (!res.ok) {
+        // Non-auth failures shouldn't be treated as "invalid key".
+        throw new Error(`Key verification failed (${res.status})`)
+      }
+      return true
+    } catch (e) {
+      logError(e)
+      throw e
+    }
   }
 
   try {
@@ -1045,6 +1082,42 @@ async function* queryModel(
       new Error(CUSTOM_OFF_SWITCH_MESSAGE),
       options.model,
     )
+    return
+  }
+
+  // OpenAI-compatible provider path (OpenRouter / gateways / etc).
+  // This is intentionally a minimal, non-Anthropic implementation:
+  // - no Anthropic beta headers / thinking blocks
+  // - best-effort tools support via OpenAI `tools` + `tool_calls`
+  if (getLLMProviderKind() === 'openai_compat') {
+    try {
+      const toolChoice =
+        options.toolChoice?.type === 'tool'
+          ? { name: options.toolChoice.name }
+          : options.toolChoice?.type === 'auto'
+            ? 'auto'
+            : undefined
+      const filteredTools = tools.filter(
+        t => !toolMatchesName(t, TOOL_SEARCH_TOOL_NAME),
+      )
+      const assistant = await queryOpenAICompatOnce({
+        messages,
+        systemPrompt,
+        tools: filteredTools,
+        model: options.model,
+        toolChoice,
+        temperature: options.temperatureOverride,
+        maxTokens: options.maxOutputTokensOverride,
+        signal,
+        getToolPermissionContext: options.getToolPermissionContext,
+        agents: options.agents,
+        allowedAgentTypes: options.allowedAgentTypes,
+        agentId: options.agentId,
+      })
+      yield assistant
+    } catch (error) {
+      yield getAssistantMessageFromError(error, options.model)
+    }
     return
   }
 

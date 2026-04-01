@@ -1,9 +1,15 @@
 # Open Claude Code
 <a href="README-zh.md"><img src="https://img.shields.io/badge/🇨🇳中文版-1a1a2e?style=for-the-badge"></a>
 <a href="README.md"><img src="https://img.shields.io/badge/🇺🇸English-1a1a2e?style=for-the-badge"></a>
- 
+
+## 🎉 News
+[2026.04.01]🎯📢 🚀 Open Claude Code now supports two LLM_PROVIDER modes: anthropic (Native) and openai_compat (OpenAI-Compatible)!
+Via openai_compat, you can now connect to almost any major provider, including OpenRouter, DeepSeek, Gemini, and more.
+
 ## Quickstart
 ```
+Copy `.env.example` to `.env` and fill in your api key
+
 cd run
 brew install bun
 bun install

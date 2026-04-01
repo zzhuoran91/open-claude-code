@@ -263,6 +263,21 @@ export function getAnthropicApiKeyWithSource(
   }
 
   if (isEnvTruthy(process.env.CI) || process.env.NODE_ENV === 'test') {
+    const providerRaw =
+      process.env.LLM_PROVIDER ||
+      process.env.CLAUDE_CODE_LLM_PROVIDER ||
+      process.env.CLAUDE_CODE_PROVIDER ||
+      ''
+    const provider = providerRaw.trim().toLowerCase()
+    const isOpenAICompat =
+      provider === 'openai' ||
+      provider === 'openai_compat' ||
+      provider === 'openai-compatible' ||
+      provider === 'openrouter'
+    const hasOpenAICompatKey = Boolean(
+      process.env.OPENAI_API_KEY || process.env.LLM_API_KEY,
+    )
+
     // Check for API key from file descriptor first
     const apiKeyFromFd = getApiKeyFromFileDescriptor()
     if (apiKeyFromFd) {
@@ -275,10 +290,13 @@ export function getAnthropicApiKeyWithSource(
     if (
       !apiKeyEnv &&
       !process.env.CLAUDE_CODE_OAUTH_TOKEN &&
-      !process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR
+      !process.env.CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR &&
+      !(isOpenAICompat && hasOpenAICompatKey)
     ) {
       throw new Error(
-        'ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN env var is required',
+        isOpenAICompat
+          ? 'LLM_API_KEY/OPENAI_API_KEY env var is required'
+          : 'ANTHROPIC_API_KEY or CLAUDE_CODE_OAUTH_TOKEN env var is required',
       )
     }
 
