@@ -10,6 +10,8 @@ bun install
 bun run dev
 ```
 
+![](assets/run-claude-code.png)
+
 ## Directory tree
 ```
 src/
