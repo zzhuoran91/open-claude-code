@@ -1770,12 +1770,12 @@ async function run(): Promise<CommanderCommand> {
       toolPermissionContext = stripDangerousPermissionsForAutoMode(toolPermissionContext);
     }
 
-    // Print any warnings from initialization
+      // Print any warnings from initialization
     warnings.forEach(warning => {
       // biome-ignore lint/suspicious/noConsole:: intentional console output
       console.error(warning);
     });
-    void assertMinVersion();
+    // void assertMinVersion(); // Disabled for open-claude-code
 
     // claude.ai config fetch: -p mode only (interactive uses useManageMCPConnections
     // two-phase loading). Kicked off here to overlap with setup(); awaited
