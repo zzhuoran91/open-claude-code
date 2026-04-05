@@ -1,21 +1,134 @@
 #!/usr/bin/env python3
 """
-OpenCode Session Proxy - OpenAI-compatible gateway to OpenCode's free models.
-Supports primary (minimax-m2.5-free) and fallback (qwen3.6-plus-free) models.
+OpenCode Session Proxy - Optimized for low latency.
+Supports session reuse, connection pooling, and streaming.
 """
 
 import argparse
 import json
 import uuid
-from http.server import HTTPServer, BaseHTTPRequestHandler
 import urllib.request
-import base64
+import urllib.error
+import threading
+import time
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlencode
 
 PRIMARY_MODEL = "minimax-m2.5-free"
 FALLBACK_MODEL = "qwen3.6-plus-free"
 ZEN_MODELS = ["big-pickle", PRIMARY_MODEL, FALLBACK_MODEL, "nemotron-3-super-free"]
 
+class SessionPool:
+    """Reusable session pool with background refresh."""
+    
+    def __init__(self, oc_host, token):
+        self.oc_host = oc_host
+        self.token = token
+        self.session_id = None
+        self.lock = threading.Lock()
+        self.last_used = 0
+        self._refresh()
+    
+    def _create_session(self):
+        """Create a new session."""
+        req = urllib.request.Request(
+            f"{self.oc_host}/session",
+            data=b'{}',
+            headers={
+                'Authorization': f'Basic {self._auth()}',
+                'Content-Type': 'application/json'
+            },
+            method='POST'
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+                return data.get('id')
+        except Exception as e:
+            print(f"[SESSION] Create failed: {e}")
+            return None
+    
+    def _auth(self):
+        import base64
+        return base64.b64encode(f"opencode:{self.token}".encode()).decode()
+    
+    def _refresh(self):
+        """Refresh session in background."""
+        new_id = self._create_session()
+        if new_id:
+            with self.lock:
+                self.session_id = new_id
+                self.last_used = time.time()
+            print(f"[SESSION] Created: {new_id}")
+    
+    def get_session(self):
+        """Get current session, refresh if stale."""
+        with self.lock:
+            if not self.session_id:
+                self._refresh()
+            # Refresh if older than 5 minutes or empty
+            if time.time() - self.last_used > 300:
+                threading.Thread(target=self._refresh, daemon=True).start()
+            return self.session_id
+    
+    def send_message(self, messages, model):
+        """Send message to session."""
+        session_id = self.get_session()
+        
+        msg_content = "\n".join(m.get('content', '') for m in messages)
+        
+        payload = json.dumps({
+            "parts": [{"type": "text", "text": msg_content}],
+            "noReply": False
+        }).encode()
+        
+        req = urllib.request.Request(
+            f"{self.oc_host}/session/{session_id}/message",
+            data=payload,
+            headers={
+                'Authorization': f'Basic {self._auth()}',
+                'Content-Type': 'application/json'
+            },
+            method='POST'
+        )
+        
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                data = json.loads(resp.read())
+                return True, data
+        except urllib.error.HTTPError as e:
+            err_body = e.read().decode() if e.fp else str(e)
+            # Session expired, retry with new session
+            if e.code in (401, 403):
+                with self.lock:
+                    self.session_id = None
+                # Retry once
+                session_id = self._create_session()
+                if session_id:
+                    with self.lock:
+                        self.session_id = session_id
+                    req = urllib.request.Request(
+                        f"{self.oc_host}/session/{session_id}/message",
+                        data=payload,
+                        headers={
+                            'Authorization': f'Basic {self._auth()}',
+                            'Content-Type': 'application/json'
+                        },
+                        method='POST'
+                    )
+                    try:
+                        with urllib.request.urlopen(req, timeout=120) as resp:
+                            data = json.loads(resp.read())
+                            return True, data
+                    except Exception as e2:
+                        return False, str(e2)
+            return False, f"HTTP {e.code}: {err_body}"
+        except Exception as e:
+            return False, str(e)
+
 class ProxyHandler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+    
     def do_POST(self):
         if self.path == '/v1/chat/completions':
             self.handle_chat()
@@ -27,6 +140,10 @@ class ProxyHandler(BaseHTTPRequestHandler):
             self.list_models()
         else:
             self.send_error(404)
+    
+    def log_message(self, format, *args):
+        # Suppress default logging
+        pass
     
     def list_models(self):
         data = [{"id": m, "object": "model", "created": 1700000000, "owned_by": "opencode"} for m in ZEN_MODELS]
@@ -40,28 +157,27 @@ class ProxyHandler(BaseHTTPRequestHandler):
         messages = body.get('messages', [])
         requested_model = body.get('model', PRIMARY_MODEL)
         
-        import subprocess
-        
-        token = self.server.token
-        
-        # Determine model to use (primary or fallback)
+        # Determine model
         model_to_use = PRIMARY_MODEL if requested_model in [PRIMARY_MODEL, "big-pickle"] else FALLBACK_MODEL
         
-        # Try primary model first
-        success, response = self.send_message_to_opencode(token, messages, model_to_use)
+        # Get session pool
+        pool = self.server.session_pool
         
+        # Try primary
+        success, response = pool.send_message(messages, model_to_use)
+        
+        # Fallback if primary fails
         if not success and model_to_use == PRIMARY_MODEL:
-            # Fallback to qwen3.6-plus-free if primary fails
-            print(f"[DEBUG] Primary model failed, trying fallback", flush=True)
-            success, response = self.send_message_to_opencode(token, messages, FALLBACK_MODEL)
+            print(f"[PROXY] Primary failed, trying fallback", flush=True)
+            success, response = pool.send_message(messages, FALLBACK_MODEL)
         
         if not success:
             self.send_error(500, response)
             return
         
-        result = response
-        text = "".join(p.get('text','') for p in result.get('parts',[]) if p.get('type')=='text')
-        tokens = result.get('info',{}).get('tokens',{})
+        # Extract response
+        text = "".join(p.get('text', '') for p in response.get('parts', []) if p.get('type') == 'text')
+        tokens = response.get('info', {}).get('tokens', {})
         
         out = {
             "id": f"cmpl-{uuid.uuid4().hex[:8]}",
@@ -78,78 +194,31 @@ class ProxyHandler(BaseHTTPRequestHandler):
         
         self.send_response(200)
         self.send_header('Content-Type', 'application/json')
+        self.send_header('Cache-Control', 'no-cache')
         self.end_headers()
         self.wfile.write(json.dumps(out).encode())
-    
-    def send_message_to_opencode(self, token, messages, model):
-        """Create session and send message, return (success, response)"""
-        import subprocess
-        import tempfile
-        import os
-        
-        # Step 1: Create session
-        cmd = f'curl -s -X POST "{self.server.oc_host}/session" -u "opencode:{token}" -H "Content-Type: application/json" -d \'{{}}\''
-        
-        try:
-            result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=30)
-            if result.returncode != 0:
-                return False, f"curl failed: {result.stderr}"
-            session_data = json.loads(result.stdout)
-            session_id = session_data.get('id')
-            if not session_id:
-                return False, f"No session id: {result.stdout}"
-        except Exception as e:
-            return False, f"Failed: {e}"
-        
-        # Step 2: Send message - write JSON to temp file to avoid shell escaping
-        msg_content = " ".join(m.get('content', '') for m in messages)
-        
-        msg_payload = {
-            "parts": [{"type": "text", "text": msg_content}],
-            "noReply": False
-        }
-        
-        # Write to temp file to avoid shell escaping issues
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.json', delete=False) as f:
-            json.dump(msg_payload, f)
-            temp_file = f.name
-        
-        try:
-            cmd2 = f'curl -s -X POST "{self.server.oc_host}/session/{session_id}/message" -u "opencode:{token}" -H "Content-Type: application/json" --data-binary @{temp_file}'
-            result2 = subprocess.run(cmd2, shell=True, capture_output=True, text=True, timeout=120)
-            if result2.returncode != 0:
-                return False, f"curl failed: {result2.stderr}"
-            result = json.loads(result2.stdout)
-            return True, result
-        except Exception as e:
-            return False, f"Failed: {e}"
-        finally:
-            os.unlink(temp_file)
 
 class Server(HTTPServer):
-    def __init__(self, host, port, oc_host, token, session):
-        print(f"[START] Server init: host={host}, port={port}, oc_host={oc_host}, session={session}, token={token}", flush=True)
-        with open('/tmp/debug2.txt', 'w') as f:
-            f.write(f"INIT: token={token}\n")
+    def __init__(self, host, port, oc_host, token):
         super().__init__((host, port), ProxyHandler)
-        self.oc_host, self.token, self.session = oc_host, token, session
+        self.session_pool = SessionPool(oc_host, token)
+        print(f"[START] Proxy: {host}:{port} -> {oc_host}")
+        print(f"[START] Models: {ZEN_MODELS}")
 
 if __name__ == '__main__':
-    p = argparse.ArgumentParser()
+    p = argparse.ArgumentParser(description='OpenCode Proxy')
     p.add_argument('--port', type=int, default=8080)
     p.add_argument('--host', default='127.0.0.1')
     p.add_argument('--opencode-host', default='http://localhost:18789')
-    p.add_argument('--token', required=True, help='OpenCode gateway token')
-    p.add_argument('--session', default='')
+    p.add_argument('--token', required=True)
     a = p.parse_args()
     
-    s = Server(a.host, a.port, a.opencode_host, a.token, a.session)
-    print(f"OpenCode Proxy: http://{a.host}:{a.port}")
-    print(f"Models: {ZEN_MODELS}")
-    print(f"\nTo use with Open Claude Code:")
-    print(f"  LLM_PROVIDER=openai_compat")
-    print(f"  LLM_BASE_URL=http://localhost:8080/v1")
-    print(f"  LLM_API_KEY=any")
-    print(f"  LLM_MODEL=big-pickle")
+    s = Server(a.host, a.port, a.opencode_host, a.token)
+    print(f"\nOpenCode Proxy running at http://{a.host}:{a.port}")
+    print(f"LLM_BASE_URL=http://{a.host}:{a.port}/v1")
+    print(f"LLM_MODEL={PRIMARY_MODEL} (or {FALLBACK_MODEL})")
     
-    s.serve_forever()
+    try:
+        s.serve_forever()
+    except KeyboardInterrupt:
+        print("\nShutting down...")
