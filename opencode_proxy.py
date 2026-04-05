@@ -139,8 +139,8 @@ if __name__ == '__main__':
     p.add_argument('--port', type=int, default=8080)
     p.add_argument('--host', default='127.0.0.1')
     p.add_argument('--opencode-host', default='http://localhost:18789')
-    p.add_argument('--token', default='6f6177221784643f6de541785289a781c40417c88023ff8c')
-    p.add_argument('--session', default='ses_2a36d8675ffenJPk7wCh6XvXJ2')
+    p.add_argument('--token', required=True, help='OpenCode gateway token')
+    p.add_argument('--session', default='')
     a = p.parse_args()
     
     s = Server(a.host, a.port, a.opencode_host, a.token, a.session)
