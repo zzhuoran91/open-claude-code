@@ -73,12 +73,21 @@ function ocRequest(method, path, body, timeout = 120000) {
 class SessionManager {
   constructor() {
     this.sessionId = null;
+    this.sessionModel = null;
     this.creating = false;
     this.createQueue = [];
   }
 
-  async createSession() {
-    if (this.sessionId) return this.sessionId;
+  async createSession(model) {
+    // Create new session if model changed or no session exists
+    if (this.sessionId && this.sessionModel === model) {
+      return this.sessionId;
+    }
+    
+    console.log(`[SESSION] Creating new session for model: ${model}`);
+    this.sessionId = null;
+    this.sessionModel = model;
+    
     if (this.creating) {
       return new Promise((resolve, reject) => {
         this.createQueue.push({ resolve, reject });
@@ -89,7 +98,7 @@ class SessionManager {
     try {
       const result = await ocRequest('POST', '/session', '{}');
       this.sessionId = result.id;
-      console.log(`[SESSION] Created: ${this.sessionId}`);
+      console.log(`[SESSION] Created: ${this.sessionId} for ${model}`);
 
       this.createQueue.forEach(({ resolve }) => resolve(this.sessionId));
       this.createQueue = [];
@@ -105,11 +114,12 @@ class SessionManager {
 
   async refreshSession() {
     this.sessionId = null;
-    return this.createSession();
+    return this.createSession(this.sessionModel);
   }
 
   async sendMessage(messages, options = {}) {
-    const sessionId = await this.createSession();
+    const model = options.model || PRIMARY_MODEL;
+    const sessionId = await this.createSession(model);
     
     // Build message content
     let msgContent = '';
