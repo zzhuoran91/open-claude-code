@@ -178,17 +178,28 @@ class SessionManager {
         msgContent += msg.content + '\n';
       } else if (msg.role === 'assistant') {
         if (msg.content) msgContent += msg.content + '\n';
-        // Track tool calls for later
       } else if (msg.role === 'tool') {
-        // Claude Code sends tool results as separate messages
-        toolResults.push({ role: 'tool', tool_call_id: msg.tool_call_id, content: msg.content });
+        // Tool results from Claude Code - append to message content
+        msgContent += `\n[Tool Result for ${msg.tool_call_id}]: ${msg.content}\n`;
       }
     }
     
-    const body = JSON.stringify({
+    // Build request body with text and tools if provided
+    const bodyObj = {
       parts: [{ type: 'text', text: msgContent.trim() }],
       noReply: false
-    });
+    };
+
+    // Convert OpenAI tool format to OpenCode tool format if tools provided
+    if (options.tools && options.tools.length > 0) {
+      bodyObj.tools = options.tools.map(t => ({
+        name: t.function.name,
+        description: t.function.description || '',
+        input_schema: t.function.parameters || { type: 'object', properties: {} }
+      }));
+    }
+    
+    const body = JSON.stringify(bodyObj);
 
     try {
       const result = await ocRequest('POST', `/session/${sessionId}/message`, body);
@@ -296,11 +307,11 @@ const server = http.createServer((req, res) => {
           modelToUse = PRIMARY_MODEL; // default
         }
 
-        console.log(`[PROXY] Request: model=${requestedModel}, messages=${messages.length}`);
+        console.log(`[PROXY] Request: model=${requestedModel}, messages=${messages.length}, tools=${json.tools?.length || 0}`);
 
         let result;
         try {
-          result = await sessionMgr.sendMessage(messages, { model: modelToUse });
+          result = await sessionMgr.sendMessage(messages, { model: modelToUse, tools: json.tools });
         } catch (e) {
           // Try fallback model if primary failed
           console.log(`[PROXY] ${modelToUse} failed, trying fallback`);
