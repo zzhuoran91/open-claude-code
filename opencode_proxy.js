@@ -14,7 +14,16 @@ const PORT = process.env.PORT || 8080;
 const OC_HOST = process.env.OC_HOST || 'http://localhost:18789';
 const TOKEN = process.env.TOKEN || process.argv[2];
 
-const MODELS = ['big-pickle', 'minimax-m2.5-free', 'qwen3.6-plus-free', 'nemotron-3-super-free'];
+const MODELS = [
+  'big-pickle', 
+  'minimax-m2.5-free', 
+  'qwen3.6-plus-free', 
+  'nemotron-3-super-free',
+  // Aliases
+  'minimax-m2.5-free-minimax',
+  'qwen3.6-plus-free-qwen',
+  'nemotron-3-super-free-nemotron'
+];
 const PRIMARY_MODEL = 'nemotron-3-super-free';
 const FALLBACK_MODEL = 'qwen3.6-plus-free';
 const AUTH = Buffer.from(`opencode:${TOKEN}`).toString('base64');
@@ -216,21 +225,31 @@ const server = http.createServer((req, res) => {
         const json = JSON.parse(body);
         const messages = json.messages || [];
         const requestedModel = json.model || PRIMARY_MODEL;
-        const modelToUse = (requestedModel === 'qwen3.6-plus-free' || requestedModel === 'big-pickle')
-          ? PRIMARY_MODEL : FALLBACK_MODEL;
+        
+        // Map requested model to OpenCode model ID
+        let modelToUse;
+        if (requestedModel.includes('minimax') || requestedModel === 'big-pickle') {
+          modelToUse = 'minimax-m2.5-free';
+        } else if (requestedModel.includes('qwen')) {
+          modelToUse = 'qwen3.6-plus-free';
+        } else if (requestedModel.includes('nemotron')) {
+          modelToUse = 'nemotron-3-super-free';
+        } else {
+          modelToUse = PRIMARY_MODEL; // default
+        }
 
         console.log(`[PROXY] Request: model=${requestedModel}, messages=${messages.length}`);
 
         let result;
         try {
-          result = await sessionMgr.sendMessage(messages);
+          result = await sessionMgr.sendMessage(messages, { model: modelToUse });
         } catch (e) {
-          if (modelToUse === PRIMARY_MODEL) {
-            console.log('[PROXY] Primary failed, trying fallback');
-            result = await sessionMgr.sendMessage(messages);
-          } else {
-            throw e;
-          }
+          // Try fallback model if primary failed
+          console.log(`[PROXY] ${modelToUse} failed, trying fallback`);
+          const fallback = modelToUse === 'minimax-m2.5-free' ? 'qwen3.6-plus-free' 
+                       : modelToUse === 'qwen3.6-plus-free' ? 'nemotron-3-super-free'
+                       : 'minimax-m2.5-free';
+          result = await sessionMgr.sendMessage(messages, { model: fallback });
         }
 
         // Process the response
