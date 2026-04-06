@@ -5,8 +5,6 @@
   "scripts": {
     "prepare-runtime": "node ./scripts/prepare-runtime.mjs",
     "dev": "bun run prepare-runtime && bun run ./work/src/dev-entry.ts",
-    "build": "bun run prepare-runtime && bun build ./work/src/dev-entry.ts --outdir ./dist --target bun",
-    "start": "bun ./dist/dev-entry.js",
     "version": "bun run prepare-runtime && bun run ./work/src/dev-entry.ts --version"
   },
   "dependencies": {
