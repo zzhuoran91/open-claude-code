@@ -1,15 +1,14 @@
 #!/usr/bin/env node
 /**
- * OpenCode Proxy - Robust, performant version
+ * OpenCode Proxy - Robust, performant version with tool support
  * - Session reuse with auto-refresh
  * - Native HTTP requests (no curl subprocess)
- * - Connection pooling
+ * - Built-in tool support from OpenCode
+ * - Tool call translation
  * - Auto-recovery on failure
- * - Proper timeout handling
  */
 
 const http = require('http');
-const fs = require('fs');
 
 const PORT = process.env.PORT || 8080;
 const OC_HOST = process.env.OC_HOST || 'http://localhost:18789';
@@ -27,7 +26,7 @@ function parseUrl(urlStr) {
 
 const oc = parseUrl(OC_HOST);
 
-function ocRequest(method, path, body) {
+function ocRequest(method, path, body, timeout = 120000) {
   return new Promise((resolve, reject) => {
     const options = {
       hostname: oc.hostname,
@@ -39,7 +38,7 @@ function ocRequest(method, path, body) {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body || '')
       },
-      timeout: 120000
+      timeout
     };
 
     const req = http.request(options, (res) => {
@@ -83,7 +82,6 @@ class SessionManager {
       this.sessionId = result.id;
       console.log(`[SESSION] Created: ${this.sessionId}`);
 
-      // Resolve waiting queue
       this.createQueue.forEach(({ resolve }) => resolve(this.sessionId));
       this.createQueue = [];
       return this.sessionId;
@@ -101,11 +99,27 @@ class SessionManager {
     return this.createSession();
   }
 
-  async sendMessage(messages) {
+  async sendMessage(messages, options = {}) {
     const sessionId = await this.createSession();
-    const msgContent = messages.map(m => m.content || '').join('\n');
+    
+    // Build message content
+    let msgContent = '';
+    const toolResults = [];
+    
+    for (const msg of messages) {
+      if (msg.role === 'user') {
+        msgContent += msg.content + '\n';
+      } else if (msg.role === 'assistant') {
+        if (msg.content) msgContent += msg.content + '\n';
+        // Track tool calls for later
+      } else if (msg.role === 'tool') {
+        // Claude Code sends tool results as separate messages
+        toolResults.push({ role: 'tool', tool_call_id: msg.tool_call_id, content: msg.content });
+      }
+    }
+    
     const body = JSON.stringify({
-      parts: [{ type: 'text', text: msgContent }],
+      parts: [{ type: 'text', text: msgContent.trim() }],
       noReply: false
     });
 
@@ -113,7 +127,6 @@ class SessionManager {
       const result = await ocRequest('POST', `/session/${sessionId}/message`, body);
       return result;
     } catch (e) {
-      // Session expired - refresh and retry once
       if (e.message.includes('401') || e.message.includes('403')) {
         console.log('[SESSION] Expired, refreshing...');
         await this.refreshSession();
@@ -122,12 +135,52 @@ class SessionManager {
       throw e;
     }
   }
+
+  // Handle tool result submission
+  async submitToolResult(sessionId, toolUseId, result) {
+    const body = JSON.stringify({
+      parts: [{ type: 'text', text: result }],
+      noReply: false,
+      parentMessageId: toolUseId
+    });
+    
+    return ocRequest('POST', `/session/${sessionId}/message`, body);
+  }
 }
 
 const sessionMgr = new SessionManager();
 
+// Track conversation for multi-turn tool use
+const conversationHistory = new Map();
+
+function processOpenCodeResponse(result) {
+  const blocks = result.parts || [];
+  const textParts = [];
+  const toolCalls = [];
+  
+  for (const block of blocks) {
+    if (block.type === 'text') {
+      textParts.push(block.text);
+    } else if (block.type === 'tool_use') {
+      toolCalls.push({
+        id: block.id || `tc_${Date.now()}`,
+        type: 'function',
+        function: {
+          name: block.name,
+          arguments: JSON.stringify(block.input || {})
+        }
+      });
+    }
+  }
+  
+  return {
+    text: textParts.join(''),
+    toolCalls,
+    usage: result.info?.tokens || {}
+  };
+}
+
 const server = http.createServer((req, res) => {
-  // CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
@@ -166,11 +219,12 @@ const server = http.createServer((req, res) => {
         const modelToUse = (requestedModel === 'qwen3.6-plus-free' || requestedModel === 'big-pickle')
           ? PRIMARY_MODEL : FALLBACK_MODEL;
 
+        console.log(`[PROXY] Request: model=${requestedModel}, messages=${messages.length}`);
+
         let result;
         try {
           result = await sessionMgr.sendMessage(messages);
         } catch (e) {
-          // Try fallback model
           if (modelToUse === PRIMARY_MODEL) {
             console.log('[PROXY] Primary failed, trying fallback');
             result = await sessionMgr.sendMessage(messages);
@@ -179,22 +233,35 @@ const server = http.createServer((req, res) => {
           }
         }
 
-        const text = result.parts.filter(p => p.type === 'text').map(p => p.text).join('');
-        const tokens = result.info?.tokens || {};
+        // Process the response
+        const { text, toolCalls, usage } = processOpenCodeResponse(result);
 
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
+        // Build response in OpenAI format
+        const response = {
           id: `cmpl-${Date.now().toString(36)}`,
           object: 'chat.completion',
           created: 0,
           model: requestedModel,
-          choices: [{ message: { role: 'assistant', content: text }, finish_reason: 'stop' }],
+          choices: [{
+            message: {
+              role: 'assistant',
+              content: text,
+              ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {})
+            },
+            finish_reason: toolCalls.length > 0 ? 'tool_calls' : 'stop'
+          }],
           usage: {
-            prompt_tokens: tokens.input || 0,
-            completion_tokens: tokens.output || 0,
-            total_tokens: (tokens.input || 0) + (tokens.output || 0)
+            prompt_tokens: usage.input || 0,
+            completion_tokens: usage.output || 0,
+            total_tokens: (usage.input || 0) + (usage.output || 0)
           }
-        }));
+        };
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(response));
+        
+        console.log(`[PROXY] Response: text_len=${text.length}, tool_calls=${toolCalls.length}`);
+        
       } catch (e) {
         console.error('[PROXY] Error:', e.message);
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -212,9 +279,9 @@ server.timeout = 120000;
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`OpenCode Proxy running on http://127.0.0.1:${PORT}`);
   console.log(`Models: ${MODELS.join(', ')}`);
+  console.log(`Primary: ${PRIMARY_MODEL}, Fallback: ${FALLBACK_MODEL}`);
   console.log(`Target: ${OC_HOST}`);
 });
 
-// Graceful shutdown
 process.on('SIGTERM', () => { console.log('Shutting down...'); server.close(); process.exit(0); });
 process.on('SIGINT', () => { console.log('Shutting down...'); server.close(); process.exit(0); });
