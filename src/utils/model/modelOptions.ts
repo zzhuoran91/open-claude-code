@@ -476,6 +476,19 @@ export function getModelOptions(fastMode = false): ModelOption[] {
     })
   }
 
+  // Add OpenCode free tier models
+  const opencodeModels = [
+    { value: 'minimax-m2.5-free', label: 'MiniMax (Free)', description: '200K context - Excellent for large repos' },
+    { value: 'qwen3.6-plus-free', label: 'Qwen 3.6 (Free)', description: '256K context - Faster responses' },
+    { value: 'nemotron-3-super-free', label: 'Nemotron (Free)', description: 'NVIDIA free model' },
+    { value: 'big-pickle', label: 'Big Pickle (Free)', description: 'Legacy free model' },
+  ]
+  for (const opt of opencodeModels) {
+    if (!options.some(existing => existing.value === opt.value)) {
+      options.push(opt)
+    }
+  }
+
   // Append additional model options fetched during bootstrap
   for (const opt of getGlobalConfig().additionalModelOptionsCache ?? []) {
     if (!options.some(existing => existing.value === opt.value)) {
