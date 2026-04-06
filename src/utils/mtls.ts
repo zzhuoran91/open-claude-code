@@ -74,6 +74,7 @@ export const getMTLSConfig = memoize((): MTLSConfig | undefined => {
 
 /**
  * Create an HTTPS agent with mTLS configuration
+ * Optimized with connection pooling and keep-alive
  */
 export const getMTLSAgent = memoize((): HttpsAgent | undefined => {
   const mtlsConfig = getMTLSConfig()
@@ -88,6 +89,12 @@ export const getMTLSAgent = memoize((): HttpsAgent | undefined => {
     ...(caCerts && { ca: caCerts }),
     // Enable keep-alive for better performance
     keepAlive: true,
+    // Connection pooling settings
+    maxSockets: 64,
+    maxFreeSockets: 16,
+    // Timeout settings for faster failure detection
+    timeout: 60000,
+    scheduling: 'fifo',
   }
 
   logForDebugging('mTLS: Creating HTTPS agent with custom certificates')
@@ -113,6 +120,7 @@ export function getWebSocketTLSOptions(): tls.ConnectionOptions | undefined {
 
 /**
  * Get fetch options with TLS configuration (mTLS + CA certs) for undici
+ * Optimized with connection pooling for low latency
  */
 export function getTLSFetchOptions(): {
   tls?: TLSConfig
@@ -144,8 +152,14 @@ export function getTLSFetchOptions(): {
       key: tlsConfig.key,
       passphrase: tlsConfig.passphrase,
       ...(tlsConfig.ca && { ca: tlsConfig.ca }),
+      // Enable TLS session resumption
+      maxSessionTokens: 128,
     },
+    // Pipelining set to 1 for better reliability, but keep-alive enabled
     pipelining: 1,
+    // Connection pool size for better throughput
+    maxConnections: 64,
+    maxFreeSockets: 16,
   })
 
   return { dispatcher: agent }

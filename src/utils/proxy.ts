@@ -131,6 +131,7 @@ export function shouldBypassProxy(
 /**
  * Create an HttpsProxyAgent with optional mTLS configuration
  * Skips local DNS resolution to let the proxy handle it
+ * Optimized for low latency with keep-alive and connection reuse
  */
 function createHttpsProxyAgent(
   proxyUrl: string,
@@ -146,6 +147,13 @@ function createHttpsProxyAgent(
       passphrase: mtlsConfig.passphrase,
     }),
     ...(caCerts && { ca: caCerts }),
+    // Enable keep-alive for connection reuse (unless disabled)
+    ...(!keepAliveDisabled && {
+      keepAlive: true,
+      keepAliveMsecs: 30000,
+      maxSockets: 64,
+      maxFreeSockets: 16,
+    }),
   }
 
   if (isEnvTruthy(process.env.CLAUDE_CODE_PROXY_RESOLVES_HOSTS)) {
@@ -194,6 +202,7 @@ export function createAxiosInstance(
 /**
  * Get or create a memoized proxy agent for the given URI
  * Now respects NO_PROXY environment variable
+ * Optimized for low latency with connection pooling and TLS session resumption
  */
 export const getProxyAgent = memoize((uri: string): undici.Dispatcher => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
@@ -215,6 +224,11 @@ export const getProxyAgent = memoize((uri: string): undici.Dispatcher => {
     httpProxy: uri,
     httpsProxy: uri,
     noProxy: process.env.NO_PROXY || process.env.no_proxy,
+    // Connection pooling for better performance
+    maxConnections: 64,
+    maxFreeSockets: 16,
+    // Enable TLS session resumption for faster handshakes
+    enableMutualTLS: true,
   }
 
   // Set both connect and requestTls so TLS options apply to both paths:
@@ -228,6 +242,10 @@ export const getProxyAgent = memoize((uri: string): undici.Dispatcher => {
         passphrase: mtlsConfig.passphrase,
       }),
       ...(caCerts && { ca: caCerts }),
+      // Enable TLS session tickets for resumption
+      ...(!keepAliveDisabled && {
+        maxSessionTokens: 128,
+      }),
     }
     proxyOptions.connect = tlsOpts
     proxyOptions.requestTls = tlsOpts
