@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 /**
  * OpenCode Proxy - Robust, performant version with tool support
+ * - Auto-starts OpenCode server if not running
  * - Session reuse with auto-refresh
  * - Native HTTP requests (no curl subprocess)
  * - Built-in tool support from OpenCode
@@ -9,10 +10,57 @@
  */
 
 const http = require('http');
+const { spawn } = require('child_process');
+const fs = require('fs');
 
 const PORT = process.env.PORT || 8080;
 const OC_HOST = process.env.OC_HOST || 'http://localhost:18789';
 const TOKEN = process.env.TOKEN || process.argv[2];
+
+// Auto-start OpenCode if not running
+async function ensureOpenCodeRunning() {
+  return new Promise((resolve) => {
+    // Check if OpenCode is already running
+    const check = http.request({
+      hostname: '127.0.0.1',
+      port: 18789,
+      path: '/',
+      method: 'GET',
+      timeout: 2000
+    }, (res) => {
+      console.log('[OPENCODE] Already running');
+      resolve(true);
+    });
+    
+    check.on('error', () => {
+      // Not running, start it
+      console.log('[OPENCODE] Starting OpenCode server...');
+      const opencodeBin = process.env.HOME + '/.opencode/bin/opencode';
+      
+      // Check if binary exists
+      if (!fs.existsSync(opencodeBin)) {
+        console.error('[OPENCODE] Binary not found:', opencodeBin);
+        resolve(false);
+        return;
+      }
+      
+      const opencode = spawn(opencodeBin, ['serve', '--port', '18789', '--hostname', '127.0.0.1'], {
+        detached: true,
+        stdio: 'ignore'
+      });
+      
+      opencode.unref();
+      
+      // Wait for it to start
+      setTimeout(() => {
+        console.log('[OPENCODE] Started');
+        resolve(true);
+      }, 3000);
+    });
+    
+    check.end();
+  });
+}
 
 const MODELS = [
   'big-pickle', 
@@ -305,11 +353,20 @@ const server = http.createServer((req, res) => {
 });
 
 server.timeout = 120000;
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`OpenCode Proxy running on http://127.0.0.1:${PORT}`);
-  console.log(`Models: ${MODELS.join(', ')}`);
-  console.log(`Primary: ${PRIMARY_MODEL}, Fallback: ${FALLBACK_MODEL}`);
-  console.log(`Target: ${OC_HOST}`);
+
+// Auto-start OpenCode then start proxy
+ensureOpenCodeRunning().then((ok) => {
+  if (!ok) {
+    console.error('[PROXY] Failed to start OpenCode, exiting');
+    process.exit(1);
+  }
+  
+  server.listen(PORT, '127.0.0.1', () => {
+    console.log(`OpenCode Proxy running on http://127.0.0.1:${PORT}`);
+    console.log(`Models: ${MODELS.join(', ')}`);
+    console.log(`Primary: ${PRIMARY_MODEL}, Fallback: ${FALLBACK_MODEL}`);
+    console.log(`Target: ${OC_HOST}`);
+  });
 });
 
 process.on('SIGTERM', () => { console.log('Shutting down...'); server.close(); process.exit(0); });
